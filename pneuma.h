@@ -7,15 +7,24 @@
 #include<array>
 #include<regex>
 #include<boost\scope_exit.hpp>
-
+template<class Iterator>
 struct Pneuma_DebugData
 {
+	Pneuma_DebugData(const Iterator &begin)
+		:max_back(begin)
+	{}
+	void SetMaxBack(const Iterator&it)
+	{
+		max_back=std::max(max_back,it);
+	}
 	const Pneuma_DebugData& operator+=(const Pneuma_DebugData&rhs)
 	{
+		max_back=std::max(max_back,rhs.max_back);
 		return *this;
 	}
-
+	Iterator max_back;
 };
+
 template<class T,class ITERATOR,class RESULT_TYPE,class BUILD_TYPE> //Buildで返す型
 class basic_pneuma{
 public:
@@ -166,7 +175,7 @@ protected:
 
 
 public:
-	typedef Pneuma_DebugData DebugData;
+	typedef Pneuma_DebugData<Iterator> DebugData;
 protected:
 	class Factor
 	{
@@ -204,24 +213,22 @@ protected:
 				Or(const Facter_expr&lhs,const Facter_expr&rhs)
 					:lhs(lhs),rhs(rhs)
 				{}
-				bool operator()(Iterator &it,const Iterator&end,holder_data&holder,DebugData&result)const
+				bool operator()(Iterator &it,const Iterator&end,holder_data&holder,DebugData&debug)const
 				{
 					holder_data h;
-					DebugData r;
 					Iterator i=it;
-					if((*lhs)(i,end,h,r))
+					if((*lhs)(i,end,h,debug))
 					{
 						holder+=h;
-						result+=r;
 						it=i;
 						return true;
 					}
-					return (*rhs)(it,end,holder,result);
+					return (*rhs)(it,end,holder,debug);
 				}
 			private:
 				Factor_Ptr lhs,rhs;
 			};
-			return Factor_Ptr (new Or(*this,rhs));  
+			return std::make_shared<Or>(*this,rhs); 
 		}
 		inline Facter_expr operator *()const
 		{
@@ -234,13 +241,15 @@ protected:
 
 				bool operator()(Iterator &it,const Iterator&end,holder_data&holder,DebugData&result)const
 				{
+					if((*rhs)(it,end,holder,result))
+						(*this)(it,end,holder,result);
+					return true;
+
 					holder_data h;
-					DebugData r;
 					Iterator i=it;
-					if((*rhs)(i,end,h,r) && (*this)(i,end,h,r))
+					if((*rhs)(i,end,h,result) && (*this)(i,end,h,result))
 					{
 						holder+=h;
-						result+=r;
 						it=i;
 					}
 					return true;
@@ -248,7 +257,7 @@ protected:
 			private:
 				Factor_Ptr rhs;
 			};
-			return Factor_Ptr (new Loop(*this));  
+			return std::make_shared<Loop>(*this);
 		}
 		inline Facter_expr operator +()const
 		{
@@ -256,31 +265,16 @@ protected:
 		}
 		inline Facter_expr operator!()const
 		{
-			class Option:public Factor
+			class OK:public Factor
 			{
 			public:
-				Option(const Facter_expr&rhs)
-					:rhs(rhs)
-				{}
-
 				bool operator()(Iterator &it,const Iterator&end,holder_data&holder,DebugData&result)const
 				{
-					holder_data h;
-					DebugData r;
-					Iterator i=it;
-					if((*rhs)(i,end,h,r))
-					{
-						holder+=h;
-						result+=r;
-						it=i;
-					}
 					return true;
 				}
 			private:
-				Factor_Ptr rhs;
 			};
-			return Factor_Ptr (new Option(*this));  
-
+			return (*this)|Facter_expr(std::make_shared<OK>());
 		}
 		operator Factor_Ptr()const
 		{
@@ -292,16 +286,25 @@ protected:
 				{}
 				bool operator()(Iterator &it,const Iterator&end,holder_data&holder,DebugData&result)const
 				{
-					return 
+					holder_data h=holder;
+					Iterator i=it;
+					if( 
 						std::all_of(
 						data.begin(),data.end(),[&](const Factor_Ptr&factor){
-							return (*factor)(it,end,holder,result);
-					});
+							return (*factor)(i,end,h,result);
+						})
+					)
+						{
+							it=i;
+							holder=h;
+							return true;
+						}
+						return false;
 				}
 			private:
 				std::vector<Factor_Ptr> data;
 			};
-			return Factor_Ptr (new wrapper_Facter_expr(data)); 
+			return std::make_shared<wrapper_Facter_expr>(data);
 		}
 		Factor_Ptr Wrap()const
 		{
@@ -332,7 +335,8 @@ protected:
 		bool operator()(Iterator &it,const Iterator&end,holder_data& hold,DebugData&result)const
 		{
 			holder_data myhold;
-			if(std::all_of(data.begin(),data.end(),[&](const Factor_Ptr&factor){return (*factor)(it,end,myhold,result);}))
+			Iterator i=it;
+			if(std::all_of(data.begin(),data.end(),[&](const Factor_Ptr&factor){return (*factor)(i,end,myhold,result);}))
 			{
 				if(myhold.st.size()==0 && !myhold.func && myhold.ast.size()==1)
 				{
@@ -342,6 +346,7 @@ protected:
 				{
 					hold.ast.push_back(MakeAst(myhold.st,myhold.ast,myhold.func));
 				}
+				it=i;
 				return true;
 			}
 			return false;
@@ -410,7 +415,18 @@ private:
 	HolderDataPtr start;
 	holder_data holder;
 public:
-	bool Parse(Iterator&it,const Iterator&end,DebugData&debug)
+	void Parse(Iterator&it,const Iterator&end)
+	{
+		auto temp=it;
+		DebugData debug(it);
+		bool r=Parse(it,end,debug);
+		if(!r || it!=end )
+		{
+			it=temp;
+			throw debug;
+		}
+	}
+	bool Parse(Iterator&it,const Iterator&end,DebugData &debug)
 	{
 		if(!start)throw BNF_error("NotDefinedStart");
 		Symbol node(*start);
@@ -439,8 +455,9 @@ protected:
 		private:
 			CallFuncPtr fun;
 		};
-		return Factor_Ptr(new SetCallFunc(func));
+		return std::make_shared<SetCallFunc>(func);
 	}
+
 	//普通の終端記号用のテンプレート。funcは条件、pushはトークンを保存するか
 	template<class FUNC,bool PUSH>
 	class basic_terminal_symbol:public Factor
@@ -449,7 +466,7 @@ protected:
 		basic_terminal_symbol(const FUNC&f)
 			:f(f)
 		{}
-		bool operator()(Iterator &it,const Iterator&end,holder_data&holder,DebugData&result)const
+		bool operator()(Iterator &it,const Iterator&end,holder_data&holder,DebugData&debug)const
 		{
 			if(it!=end && f(*it))
 			{
@@ -458,6 +475,7 @@ protected:
 				++it;
 				return true;
 			}
+			debug.SetMaxBack(it);
 			return false;
 		}
 	private:
@@ -491,90 +509,93 @@ protected:
 	}
 
 	//pneuma→symbol
-	
 	template<class PNEUMA>
-	struct PneumaWrapperData
+	class PneumaWrapper
 	{
 		typedef std::function<std::shared_ptr<PNEUMA>()> Data;
-		PneumaWrapperData(const Data&data):data(data)
-		{}
-		std::function<std::shared_ptr<PNEUMA>()> data;
-		PneumaWrapperData()
+	public:
+
+		//VS2013来たら本気出す
+		//引数ぶち込め
+		PneumaWrapper()
 			:data([]{return std::make_shared<PNEUMA>();})
 		{}
-		//VS2013来たら本気出す
+		
 		template<class U1>
-		PneumaWrapperData<PNEUMA> MakePneumaWrapperData(U1&&a1)
-			:([]{return std::make_shared<PNEUMA>(a1);})
+		PneumaWrapper(U1&&a1)
+			:data([]{return std::make_shared<PNEUMA>(a1);})
 		{}
 		
 		template<class U1,class U2>
-		PneumaWrapperData<PNEUMA> MakePneumaWrapperData(U1&&a1,U2&&a2)
-			:([]{return std::make_shared<PNEUMA>(a1,a2);})
+		PneumaWrapper(U1&&a1,U2&&a2)
+			:data([]{return std::make_shared<PNEUMA>(a1,a2);})
 		{}
 
 		template<class U1,class U2,class U3>
-		PneumaWrapperData<PNEUMA> MakePneumaWrapperData(U1&&a1,U2&&a2,U3&&a3)
-			:([]{return std::make_shared<PNEUMA>(a1,a2);})
+		PneumaWrapper(U1&&a1,U2&&a2,U3&&a3)
+			:data([]{return std::make_shared<PNEUMA>(a1,a2,a3);})
 		{}
 
 		template<class U1,class U2,class U3,class U4>
-		PneumaWrapperData<PNEUMA> MakePneumaWrapperData(U1&&a1,U2&&a2,U3&&a3,U4&&a4)
-			:([]{return std::make_shared<PNEUMA>(a1,a2,a3,a4);})
+		PneumaWrapper(U1&&a1,U2&&a2,U3&&a3,U4&&a4)
+			:data([]{return std::make_shared<PNEUMA>(a1,a2,a3,a4);})
 		{}
-	};
-	template<class PneumaData>
-	Facter_expr wrapper(const PneumaData&data)
-	{
-		class pneuma2symbol:public Factor
-		{
-		public:
-			pneuma2symbol(const PneumaData&f)
-				:data(f)
-			{}
-			bool operator()(Iterator &it,const Iterator&end,holder_data&hold,DebugData&result)const
-			{
-				auto p=data.data();
-				if(p->Parse(it,end,result))
-				{
-					Call_Func f=[=]{return p->Build();};
-					hold.ast.push_back(MakeAst(std::make_shared<Call_Func>(f)));
-					return true;
-				}
-				return false;
-			}
-		private:
-			PneumaData data;
-		}; 
-		return Factor_Ptr(new pneuma2symbol(data.data));
-	}
 
-	template<class PneumaData,class TransFunction>
-	Facter_expr wrapper(const PneumaData&data,const TransFunction &func)
-	{
-		class pneuma2symbol:public Factor
+		Facter_expr operator()()
 		{
-		public:
-			pneuma2symbol(const Maker&f,const TransFunction &trans)
-				:data(f),trans(trans)
-			{}
-			bool operator()(Iterator &it,const Iterator&end,holder_data&hold,DebugData&result)const
+			class pneuma2symbol:public Factor
 			{
-				auto p=data.data();
-				if(p->Parse(it,end,result))
+			public:
+				pneuma2symbol(const Data&f)
+					:data(f)
+				{}
+				bool operator()(Iterator &it,const Iterator&end,holder_data&hold,DebugData&result)const
 				{
-					Call_Func f=[=]{return trans(p->Build());};
-					hold.ast.push_back(MakeAst(std::make_shared<Call_Func>(f)));
-					return true;
+					auto p=data();
+					if(p->Parse(it,end,result))
+					{
+						Call_Func f=[=]{return p->Build();};
+						hold.ast.push_back(MakeAst(std::make_shared<Call_Func>(f)));
+						return true;
+					}
+					return false;
 				}
-				return false;
-			}
-		private:
-			PneumaData data;
-			TransFunction trans;
-		}; 
-		return Factor_Ptr(new pneuma2symbol(data.data));
-	}
+			private:
+				Data data;
+			}; 
+			return std::make_shared<pneuma2symbol>(data);
+		}
+		template<class TransFunction>
+		Facter_expr operator()(const TransFunction &func)
+		{
+			class pneuma2symbol:public Factor
+			{
+			public:
+				pneuma2symbol(const Data&f,const TransFunction &trans)
+					:data(f),trans(trans)
+				{}
+				bool operator()(Iterator &it,const Iterator&end,holder_data&hold,DebugData&result)const
+				{
+					auto p=data();
+					if(p->Parse(it,end,result))
+					{
+						Call_Func f=[=]{return trans(p->Build());};
+						hold.ast.push_back(MakeAst(std::make_shared<Call_Func>(f)));
+						return true;
+					}
+					return false;
+				}
+			private:
+				Data data;
+				TransFunction trans;
+			}; 
+			return std::make_shared<pneuma2symbol>(data,func);
+		}
+	private:
+
+		std::function<std::shared_ptr<PNEUMA>()> data;
+
+	};
 };
 
 template<class Iterator,class result_type,class BuildType>

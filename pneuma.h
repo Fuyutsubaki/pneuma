@@ -31,16 +31,22 @@ public:
 	typedef ITERATOR Iterator;
 	typedef RESULT_TYPE result_type;
 	typedef BUILD_TYPE build_type;
-	struct BNF_error:std::runtime_error
+	struct CompileError:std::runtime_error
 	{
-		BNF_error(const std::string&e)
-			:runtime_error(e)
+		CompileError(const std::string&e):
+			std::runtime_error(e)
 		{}
 	};
-	struct Ast_error:std::runtime_error
+	struct BNF_error:CompileError
+	{
+		BNF_error(const std::string&e)
+			:CompileError(e)
+		{}
+	};
+	struct Ast_error:CompileError
 	{
 		Ast_error(const std::string&e)
-			:runtime_error(e)
+			:CompileError(e)
 		{}
 	};
 protected:
@@ -415,14 +421,13 @@ private:
 	HolderDataPtr start;
 	holder_data holder;
 public:
-	void Parse(Iterator&it,const Iterator&end)
+	void Parse(const Iterator&begin,const Iterator&end)
 	{
-		auto temp=it;
+		auto it=begin;
 		DebugData debug(it);
 		bool r=Parse(it,end,debug);
 		if(!r || it!=end )
 		{
-			it=temp;
 			throw debug;
 		}
 	}
@@ -596,6 +601,16 @@ protected:
 		std::function<std::shared_ptr<PNEUMA>()> data;
 
 	};
+
+
+	//カンマ区切りなどの動きをサポートする。空行を許さない
+	//[a][aba][ababa]...[ababab...aba]
+	inline Facter_expr Sandwich(const Facter_expr&bread ,const Facter_expr&filling)
+	{
+		return bread &*(filling&bread);
+	};
+
+
 };
 
 template<class Iterator,class result_type,class BuildType>
